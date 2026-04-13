@@ -15,6 +15,17 @@ const PLATFORMS = {
 class FlipbookDownloader {
     constructor() {
         this.jsPDF = window.jspdf.jsPDF;
+        this.resetSession();
+    }
+
+    resetSession() {
+        this.images = [];
+        this.pageCount = 0;
+        this.baseUrl = '';
+        this.platform = PLATFORMS.UNKNOWN;
+        this.pdf = null;
+        this.completedCount = 0;
+        this.skippedPages = [];
     }
 
     detectPlatform(url) {
@@ -50,8 +61,6 @@ class FlipbookDownloader {
     }
 
     async downloadImage(url, retries = 2) {
-        // Weserv is great but we'll optimize the images to make them faster
-        // &q=70 reduces size significantly with minimal quality loss
         const proxiedUrl = `${IMAGE_PROXY}${encodeURIComponent(url)}&q=70&output=jpg`;
         
         for (let i = 0; i <= retries; i++) {
@@ -71,73 +80,89 @@ class FlipbookDownloader {
                     console.warn(`Failed to download image after ${retries} retries: ${url}`, e);
                     return null;
                 }
-                // Exponential backoff
                 await new Promise(r => setTimeout(r, 500 * (i + 1)));
             }
         }
     }
 
-    async startDownload(url, onProgress) {
-        const baseUrl = this.cleanSearchUrl(url);
+    async init(url, onProgress) {
+        this.resetSession();
+        this.baseUrl = this.cleanSearchUrl(url);
         onProgress(0, 'Analyzing flipbook...', { status: 'init' });
         
-        let { count: pageCount, engine: detectedEngine } = await this.getPageCount(baseUrl);
-        let platform = this.detectPlatform(url);
+        let { count: pageCount, engine: detectedEngine } = await this.getPageCount(this.baseUrl);
+        this.platform = this.detectPlatform(url);
         
-        if (platform === PLATFORMS.UNKNOWN) platform = detectedEngine || PLATFORMS.FLIPHTML5;
+        if (this.platform === PLATFORMS.UNKNOWN) this.platform = detectedEngine || PLATFORMS.FLIPHTML5;
         if (!pageCount) pageCount = 500; 
         
-        onProgress(0, `Found ${pageCount} pages. Starting high-speed download...`, { status: 'start', total: pageCount });
+        this.pageCount = pageCount;
+        this.images = new Array(this.pageCount);
+        
+        onProgress(0, `Found ${this.pageCount} pages. Ready to start download.`, { status: 'start', total: this.pageCount });
+        return this.pageCount;
+    }
 
-        const pdf = new this.jsPDF('p', 'mm', 'a4');
-        const images = new Array(pageCount);
-        let completedCount = 0;
-        const CONCURRENCY_LIMIT = 8; // Weserv handles high concurrency like a pro
+    async downloadPages(pageNumbers, onProgress) {
+        const CONCURRENCY_LIMIT = 8;
+        const totalToDownload = pageNumbers.length;
+        let batchCompleted = 0;
+        const queue = [...pageNumbers];
         
-        const downloadQueue = Array.from({ length: pageCount }, (_, i) => i + 1);
-        
+        this.skippedPages = this.skippedPages.filter(p => !pageNumbers.includes(p));
+
         const worker = async () => {
-            while (downloadQueue.length > 0) {
-                const pageNum = downloadQueue.shift();
-                onProgress(Math.floor((completedCount / pageCount) * 100), `Downloading page ${pageNum}...`, { status: 'page_start', page: pageNum });
+            while (queue.length > 0) {
+                const pageNum = queue.shift();
+                onProgress(Math.floor((this.completedCount / this.pageCount) * 100), `Downloading page ${pageNum}...`, { status: 'page_start', page: pageNum });
                 
-                // Primary path: files/mobile/n.jpg
-                let dataUrl = await this.downloadImage(`${baseUrl}/files/mobile/${pageNum}.jpg`);
+                let dataUrl = await this.downloadImage(`${this.baseUrl}/files/mobile/${pageNum}.jpg`);
                 
-                // Fallback 1: files/shot/n.jpg (Usually exists as thumbnail/preview)
                 if (!dataUrl) {
-                    onProgress(Math.floor((completedCount / pageCount) * 100), `Retrying page ${pageNum} (LQ)...`, { status: 'page_start', page: pageNum });
-                    dataUrl = await this.downloadImage(`${baseUrl}/files/shot/${pageNum}.jpg`);
+                    onProgress(Math.floor((this.completedCount / this.pageCount) * 100), `Retrying page ${pageNum} (LQ)...`, { status: 'page_start', page: pageNum });
+                    dataUrl = await this.downloadImage(`${this.baseUrl}/files/shot/${pageNum}.jpg`);
                 }
 
-                // Fallback 2: files/large/n.jpg (High Quality)
                 if (!dataUrl) {
-                    dataUrl = await this.downloadImage(`${baseUrl}/files/large/${pageNum}.jpg`);
+                    dataUrl = await this.downloadImage(`${this.baseUrl}/files/large/${pageNum}.jpg`);
                 }
 
                 if (dataUrl) {
-                    images[pageNum - 1] = dataUrl;
-                    completedCount++;
-                    onProgress(Math.floor((completedCount / pageCount) * 100), `Page ${pageNum} ready`, { status: 'page_success', page: pageNum, count: completedCount, total: pageCount });
+                    this.images[pageNum - 1] = dataUrl;
+                    this.completedCount++;
+                    batchCompleted++;
+                    onProgress(Math.floor((this.completedCount / this.pageCount) * 100), `Page ${pageNum} ready`, { status: 'page_success', page: pageNum, count: this.completedCount, total: this.pageCount });
                 } else {
-                    onProgress(Math.floor((completedCount / pageCount) * 100), `Skipped page ${pageNum}`, { status: 'page_error', page: pageNum });
+                    if (!this.skippedPages.includes(pageNum)) {
+                        this.skippedPages.push(pageNum);
+                    }
+                    onProgress(Math.floor((this.completedCount / this.pageCount) * 100), `Skipped page ${pageNum}`, { status: 'page_error', page: pageNum });
                     
-                    // Break if we hit 10 consecutive failures (likely end of book)
-                    if (pageNum > 10 && !images.slice(Math.max(0, pageNum - 5), pageNum - 1).some(x => x)) {
-                        downloadQueue.length = 0; 
+                    // Break if we hit 10 consecutive failures (likely end of book) ONLY if we are doing a full range
+                    if (pageNumbers.length > 50 && pageNum > 10 && !this.images.slice(Math.max(0, pageNum - 5), pageNum - 1).some(x => x)) {
+                        queue.length = 0; 
                     }
                 }
             }
         };
 
-        const workers = Array.from({ length: Math.min(CONCURRENCY_LIMIT, pageCount) }, () => worker());
+        const workers = Array.from({ length: Math.min(CONCURRENCY_LIMIT, queue.length) }, () => worker());
         await Promise.all(workers);
-
-        onProgress(95, 'Finalizing PDF...', { status: 'compiling' });
         
+        return {
+            completed: this.completedCount,
+            skipped: this.skippedPages.length
+        };
+    }
+
+    async generatePDF(onProgress) {
+        if (onProgress) onProgress(95, 'Finalizing PDF...', { status: 'compiling' });
+        
+        const pdf = new this.jsPDF('p', 'mm', 'a4');
         let successfulPages = 0;
-        for (let i = 0; i < images.length; i++) {
-            const dataUrl = images[i];
+        
+        for (let i = 0; i < this.images.length; i++) {
+            const dataUrl = this.images[i];
             if (!dataUrl) continue;
 
             if (successfulPages > 0) pdf.addPage();
@@ -163,7 +188,7 @@ class FlipbookDownloader {
             successfulPages++;
         }
 
-        if (successfulPages === 0) throw new Error('Download failed completely. Try again later.');
+        if (successfulPages === 0) throw new Error('No pages downloaded to generate PDF.');
 
         pdf.save(`flipbook_${Date.now()}.pdf`);
         return successfulPages;

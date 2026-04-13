@@ -304,6 +304,73 @@ button:disabled {
     100% { transform: translateX(100%); }
 }
 
+/* Download Summary Dashboard */
+.download-summary {
+    margin-top: 2rem;
+    padding-top: 2rem;
+    border-top: 1px dashed var(--border-color);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2rem;
+}
+
+.summary-stats {
+    display: flex;
+    gap: 3rem;
+    width: 100%;
+    justify-content: center;
+}
+
+.stat-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.stat-value {
+    font-size: 2.5rem;
+    font-weight: 800;
+    font-family: 'Outfit', sans-serif;
+    color: var(--success);
+    line-height: 1;
+}
+
+.stat-item.skipped .stat-value {
+    color: var(--error);
+}
+
+.stat-label {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+}
+
+.summary-actions {
+    display: flex;
+    gap: 1rem;
+    width: 100%;
+}
+
+.summary-actions button {
+    flex: 1;
+    justify-content: center;
+}
+
+.btn-secondary {
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid var(--border-color);
+}
+
+.btn-secondary:hover {
+    background: rgba(255, 255, 255, 0.15);
+    border-color: var(--accent);
+    box-shadow: 0 10px 15px -3px rgba(34, 211, 238, 0.2);
+}
+
 /* Features */
 .features {
     display: grid;

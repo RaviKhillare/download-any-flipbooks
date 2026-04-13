@@ -11,6 +11,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const progressPercent = document.getElementById('progress-percent');
     const detailText = document.getElementById('detail-text');
 
+    const summaryContainer = document.getElementById('download-summary');
+    const downloadedCountEl = document.getElementById('downloaded-count');
+    const skippedCountEl = document.getElementById('skipped-count');
+    const retryBtn = document.getElementById('retry-btn');
+    const finishBtn = document.getElementById('finish-btn');
+
     const pagesGrid = document.getElementById('pages-grid');
     let isDownloading = false;
 
@@ -19,6 +25,18 @@ document.addEventListener('DOMContentLoaded', () => {
         progressPercent.textContent = `${percent}%`;
         statusText.textContent = message;
         if (details) detailText.textContent = details;
+    };
+
+    const updateSummary = (completed, skipped) => {
+        downloadedCountEl.textContent = completed;
+        skippedCountEl.textContent = skipped;
+        
+        if (skipped > 0) {
+            retryBtn.classList.remove('hidden');
+        } else {
+            retryBtn.classList.add('hidden');
+        }
+        summaryContainer.classList.remove('hidden');
     };
 
     const createGrid = (total) => {
@@ -39,6 +57,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (status === 'success') {
                 card.innerHTML = '<i data-lucide="check" style="width:12px; height:12px;"></i>';
                 lucide.createIcons();
+            } else if (status === 'error') {
+                card.innerHTML = '<i data-lucide="x" style="width:12px; height:12px;"></i>';
+                lucide.createIcons();
             }
         }
     };
@@ -47,62 +68,115 @@ document.addEventListener('DOMContentLoaded', () => {
         isDownloading = false;
         downloadBtn.disabled = false;
         downloadBtn.innerHTML = '<i data-lucide="download"></i><span>Download PDF</span>';
+        summaryContainer.classList.add('hidden');
         lucide.createIcons();
+    };
+
+    const runDownloadBatch = async (pages) => {
+        const result = await window.downloader.downloadPages(pages, (percent, message, meta) => {
+            if (meta) {
+                if (meta.status === 'page_start') {
+                    updatePageCard(meta.page, 'loading');
+                } else if (meta.status === 'page_success') {
+                    updatePageCard(meta.page, 'success');
+                    updateUI(percent, 'Downloading...', `Downloaded ${meta.count} / ${meta.total || '?'}`);
+                } else if (meta.status === 'page_error') {
+                    updatePageCard(meta.page, 'error');
+                }
+            } else {
+                updateUI(percent, 'Downloading...', message);
+            }
+        });
+        updateSummary(result.completed, result.skipped);
+        return result;
     };
 
     downloadBtn.addEventListener('click', async () => {
         const url = urlInput.value.trim();
-
-        if (!url) {
-            alert('Please enter a valid flipbook URL.');
-            return;
-        }
-
-        if (isDownloading) return;
+        if (!url || isDownloading) return;
 
         try {
             isDownloading = true;
             downloadBtn.disabled = true;
-            downloadBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i><span>Wait...</span>';
+            downloadBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i><span>Processing...</span>';
             lucide.createIcons();
             
             statusContainer.classList.remove('hidden');
+            summaryContainer.classList.add('hidden');
             updateUI(0, 'Initializing...', 'Detecting platform and preparing download...');
 
-            const count = await window.downloader.startDownload(url, (percent, message, meta) => {
-                if (meta) {
-                    if (meta.status === 'start') {
-                        createGrid(meta.total);
-                        updateUI(percent, 'Downloading...', `Found ${meta.total} pages. Starting...`);
-                    } else if (meta.status === 'page_start') {
-                        updatePageCard(meta.page, 'loading');
-                    } else if (meta.status === 'page_success') {
-                        updatePageCard(meta.page, 'success');
-                        updateUI(percent, 'Downloading...', `Downloaded ${meta.count} / ${meta.total || '?'}`);
-                    } else if (meta.status === 'page_error') {
-                        updatePageCard(meta.page, 'error');
-                    } else if (meta.status === 'compiling') {
-                        updateUI(95, 'Compiling PDF...', 'Merging images into high-quality PDF. Please wait.');
-                    }
-                } else {
-                    updateUI(percent, 'Downloading...', message);
+            const totalPages = await window.downloader.init(url, (percent, message, meta) => {
+                if (meta && meta.status === 'start') {
+                    createGrid(meta.total);
                 }
+                updateUI(percent, 'Initializing...', message);
             });
 
-            updateUI(100, 'Success!', `Downloaded ${count} pages. Saving PDF...`);
+            const allPages = Array.from({ length: totalPages }, (_, i) => i + 1);
+            await runDownloadBatch(allPages);
             
-            setTimeout(() => {
-                statusContainer.classList.add('hidden');
-                resetUI();
-            }, 5000);
+            updateUI(100, 'Batch Complete', 'Review results and generate PDF.');
 
         } catch (error) {
             console.error(error);
             updateUI(0, 'Error', error.message);
             detailText.style.color = 'var(--error)';
             setTimeout(resetUI, 5000);
+        } finally {
+            isDownloading = false;
         }
     });
+
+    retryBtn.addEventListener('click', async () => {
+        if (isDownloading) return;
+        const skipped = window.downloader.skippedPages;
+        if (skipped.length === 0) return;
+
+        try {
+            isDownloading = true;
+            retryBtn.disabled = true;
+            retryBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i><span>Retrying...</span>';
+            lucide.createIcons();
+
+            await runDownloadBatch(skipped);
+            updateUI(100, 'Retry Complete', 'Summary updated.');
+        } catch (error) {
+            alert('Retry failed: ' + error.message);
+        } finally {
+            isDownloading = false;
+            retryBtn.disabled = false;
+            retryBtn.innerHTML = '<i data-lucide="refresh-cw"></i><span>Retry Skipped</span>';
+            lucide.createIcons();
+        }
+    });
+
+    finishBtn.addEventListener('click', async () => {
+        if (isDownloading) return;
+        try {
+            isDownloading = true;
+            finishBtn.disabled = true;
+            finishBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i><span>Saving...</span>';
+            lucide.createIcons();
+
+            await window.downloader.generatePDF((percent, message) => {
+                updateUI(percent, 'Generating PDF...', message);
+            });
+
+            updateUI(100, 'Success!', 'PDF saved successfully.');
+            setTimeout(() => {
+                statusContainer.classList.add('hidden');
+                resetUI();
+            }, 3000);
+        } catch (error) {
+            alert('PDF creation failed: ' + error.message);
+        } finally {
+            isDownloading = false;
+            finishBtn.disabled = false;
+            finishBtn.innerHTML = '<i data-lucide="file-check"></i><span>Generate PDF</span>';
+            lucide.createIcons();
+        }
+    });
+
 
     // Add spin animation class to CSS dynamically if needed, or just use CSS
     const style = document.createElement('style');

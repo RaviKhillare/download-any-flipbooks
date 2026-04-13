@@ -58,6 +58,29 @@
             <div id="pages-grid" class="pages-grid">
                 <!-- Pages will be dynamically added here -->
             </div>
+
+            <div id="download-summary" class="download-summary hidden">
+                <div class="summary-stats">
+                    <div class="stat-item">
+                        <span class="stat-value" id="downloaded-count">0</span>
+                        <span class="stat-label">Downloaded</span>
+                    </div>
+                    <div class="stat-item skipped">
+                        <span class="stat-value" id="skipped-count">0</span>
+                        <span class="stat-label">Skipped</span>
+                    </div>
+                </div>
+                <div class="summary-actions">
+                    <button id="retry-btn" class="btn-secondary hidden">
+                        <i data-lucide="refresh-cw"></i>
+                        <span>Retry Skipped</span>
+                    </button>
+                    <button id="finish-btn">
+                        <i data-lucide="file-check"></i>
+                        <span>Generate PDF</span>
+                    </button>
+                </div>
+            </div>
         </div>
         </section>
 
