@@ -17,9 +17,12 @@ class FlipbookDownloader {
     }
 
     detectPlatform(url) {
-        if (url.includes('anyflip.com')) return PLATFORMS.ANYFLIP;
-        if (url.includes('fliphtml5.com')) return PLATFORMS.FLIPHTML5;
-        if (url.includes('pubhtml5.com')) return PLATFORMS.PUBHTML5;
+        const lowerUrl = url.toLowerCase();
+        if (lowerUrl.includes('anyflip.com')) return PLATFORMS.ANYFLIP;
+        if (lowerUrl.includes('fliphtml5.com')) return PLATFORMS.FLIPHTML5;
+        if (lowerUrl.includes('pubhtml5.com')) return PLATFORMS.PUBHTML5;
+        
+        // Generic detection logic
         return PLATFORMS.UNKNOWN;
     }
 
@@ -29,17 +32,24 @@ class FlipbookDownloader {
     }
 
     async getPageCount(url) {
-        // Try to fetch the page content and find page count in config
         try {
             const response = await fetch(`${PROXY_URL}${encodeURIComponent(url)}`);
             const html = await response.text();
             
+            // Engines often have unique signatures
+            const isAnyFlip = html.includes('anyflip') || html.includes('AnyFlip');
+            const isFlipHTML5 = html.includes('fliphtml5') || html.includes('FlipHTML5');
+
             // Look for patterns like "pageCount: 123" or "totalPageCount: 123"
-            const match = html.match(/pageCount\s*:\s*(\d+)/i) || html.match(/totalPageCount\s*:\s*(\d+)/i);
-            return match ? parseInt(match[1]) : null;
+            const match = html.match(/pageCount\s*:\s*(\d+)/i) || 
+                          html.match(/totalPageCount\s*:\s*(\d+)/i) ||
+                          html.match(/"pageCount"\s*:\s*(\d+)/i);
+            
+            const count = match ? parseInt(match[1]) : null;
+            return { count, engine: isFlipHTML5 ? PLATFORMS.FLIPHTML5 : (isAnyFlip ? PLATFORMS.ANYFLIP : null) };
         } catch (e) {
             console.error('Error fetching page count:', e);
-            return null;
+            return { count: null, engine: null };
         }
     }
 
@@ -61,14 +71,19 @@ class FlipbookDownloader {
     }
 
     async startDownload(url, onProgress) {
-        const platform = this.detectPlatform(url);
+        const baseUrl = this.cleanSearchUrl(url);
+        onProgress(0, 'Analyzing flipbook structure...');
+        
+        let { count: pageCount, engine: detectedEngine } = await this.getPageCount(baseUrl);
+        let platform = this.detectPlatform(url);
+        
         if (platform === PLATFORMS.UNKNOWN) {
-            throw new Error('Unsupported platform. Please provide an AnyFlip or FlipHTML5 link.');
+            platform = detectedEngine || PLATFORMS.FLIPHTML5;
         }
 
-        const baseUrl = this.cleanSearchUrl(url);
-        let pageCount = await this.getPageCount(baseUrl);
-        
+        // If we still don't know the platform and it's not a known one, we'll try anyway if the user provided it
+        console.log(`Detected Platform: ${platform}, Detected Engine: ${detectedEngine}, Page Count: ${pageCount}`);
+
         // Fallback: if we can't find page count, we'll try to probe up to 1000 pages
         if (!pageCount) pageCount = 500; 
 
