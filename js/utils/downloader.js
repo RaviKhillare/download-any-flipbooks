@@ -72,7 +72,7 @@ class FlipbookDownloader {
 
     async startDownload(url, onProgress) {
         const baseUrl = this.cleanSearchUrl(url);
-        onProgress(0, 'Analyzing flipbook structure...');
+        onProgress(0, 'Analyzing flipbook...', { status: 'init' });
         
         let { count: pageCount, engine: detectedEngine } = await this.getPageCount(baseUrl);
         let platform = this.detectPlatform(url);
@@ -81,57 +81,79 @@ class FlipbookDownloader {
             platform = detectedEngine || PLATFORMS.FLIPHTML5;
         }
 
-        // If we still don't know the platform and it's not a known one, we'll try anyway if the user provided it
-        console.log(`Detected Platform: ${platform}, Detected Engine: ${detectedEngine}, Page Count: ${pageCount}`);
-
-        // Fallback: if we can't find page count, we'll try to probe up to 1000 pages
         if (!pageCount) pageCount = 500; 
+        
+        // Notify UI of total page count
+        onProgress(0, `Found ${pageCount} pages. Starting parallel download...`, { status: 'start', total: pageCount });
 
         const pdf = new this.jsPDF('p', 'mm', 'a4');
-        let processedPages = 0;
-        let successfulPages = 0;
-
-        for (let i = 1; i <= pageCount; i++) {
-            onProgress(Math.floor((i / pageCount) * 100), `Processing page ${i}...`);
-            
-            // Standard AnyFlip/FlipHTML5 image path
-            const imgUrl = `${baseUrl}/files/mobile/${i}.jpg`;
-            const dataUrl = await this.downloadImage(imgUrl);
-
-            if (dataUrl) {
-                if (successfulPages > 0) pdf.addPage();
+        const images = new Array(pageCount);
+        let completedCount = 0;
+        const CONCURRENCY_LIMIT = 5;
+        
+        const downloadQueue = Array.from({ length: pageCount }, (_, i) => i + 1);
+        
+        const worker = async () => {
+            while (downloadQueue.length > 0) {
+                const pageNum = downloadQueue.shift();
+                onProgress(Math.floor((completedCount / pageCount) * 100), `Downloading page ${pageNum}...`, { status: 'page_start', page: pageNum });
                 
-                // Get image dimensions to fit in A4
-                const img = new Image();
-                await new Promise(r => { img.onload = r; img.src = dataUrl; });
-                
-                const pageWidth = pdf.internal.pageSize.getWidth();
-                const pageHeight = pdf.internal.pageSize.getHeight();
-                const imgRatio = img.width / img.height;
-                const pageRatio = pageWidth / pageHeight;
+                const imgUrl = `${baseUrl}/files/mobile/${pageNum}.jpg`;
+                const dataUrl = await this.downloadImage(imgUrl);
 
-                let w, h;
-                if (imgRatio > pageRatio) {
-                    w = pageWidth;
-                    h = pageWidth / imgRatio;
+                if (dataUrl) {
+                    images[pageNum - 1] = dataUrl;
+                    completedCount++;
+                    onProgress(Math.floor((completedCount / pageCount) * 100), `Page ${pageNum} ready`, { status: 'page_success', page: pageNum, count: completedCount });
                 } else {
-                    h = pageHeight;
-                    w = pageHeight * imgRatio;
+                    console.warn(`Could not download page ${pageNum}`);
+                    onProgress(Math.floor((completedCount / pageCount) * 100), `Failed page ${pageNum}`, { status: 'page_error', page: pageNum });
+                    
+                    // If we hit consecutive failures at the end, stop the queue
+                    if (pageNum > 10 && !images.slice(Math.max(0, pageNum - 5), pageNum - 1).some(x => x)) {
+                        downloadQueue.length = 0; 
+                    }
                 }
-
-                pdf.addImage(dataUrl, 'JPEG', (pageWidth - w) / 2, (pageHeight - h) / 2, w, h);
-                successfulPages++;
-            } else if (i > 5 && !dataUrl) {
-                // If we hit consecutive failures after a few pages, we likely reached the end
-                console.log("Stopping at page", i - 1);
-                break;
             }
+        };
+
+        // Start workers
+        const workers = Array.from({ length: Math.min(CONCURRENCY_LIMIT, pageCount) }, () => worker());
+        await Promise.all(workers);
+
+        // Compile PDF
+        onProgress(95, 'Compiling PDF...', { status: 'compiling' });
+        
+        let successfulPages = 0;
+        for (let i = 0; i < images.length; i++) {
+            const dataUrl = images[i];
+            if (!dataUrl) continue;
+
+            if (successfulPages > 0) pdf.addPage();
             
-            processedPages++;
+            const img = new Image();
+            await new Promise(r => { img.onload = r; img.src = dataUrl; });
+            
+            const pageWidth = pdf.internal.pageSize.getWidth();
+            const pageHeight = pdf.internal.pageSize.getHeight();
+            const imgRatio = img.width / img.height;
+            const pageRatio = pageWidth / pageHeight;
+
+            let w, h;
+            if (imgRatio > pageRatio) {
+                w = pageWidth;
+                h = pageWidth / imgRatio;
+            } else {
+                h = pageHeight;
+                w = pageHeight * imgRatio;
+            }
+
+            pdf.addImage(dataUrl, 'JPEG', (pageWidth - w) / 2, (pageHeight - h) / 2, w, h);
+            successfulPages++;
         }
 
         if (successfulPages === 0) {
-            throw new Error('Could not download any pages. Please check the URL or try another flipbook.');
+            throw new Error('Could not download any pages.');
         }
 
         pdf.save('flipbook.pdf');
