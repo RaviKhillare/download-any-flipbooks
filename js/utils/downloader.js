@@ -169,6 +169,5 @@ class FlipbookDownloader {
         return successfulPages;
     }
 }
-}
 
 window.downloader = new FlipbookDownloader();
